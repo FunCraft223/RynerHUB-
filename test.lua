@@ -1,4 +1,4 @@
--- luarmor_advanced_hook_with_ui.lua (v4)
+-- luarmor_advanced_hook_with_ui.lua (v4-fix)
 -- tempel di executor SEBELUM load bootstrap Luarmor
 
 local Players     = game:GetService("Players")
@@ -19,20 +19,17 @@ local CFG = {
     dedup     = true,
     max_dumps = 200,
     max_log   = 500,
-    sandbox   = false,   -- true = run sumber di env kosong (getfenv(0))
+    sandbox   = false,
 }
 
 local dumped       = {}
 local dumped_count = 0
 local HOOK_TAG     = "[N-HOOK]"
 
--- ============================================================
--- STATE
--- ============================================================
 local State = {
     log        = {},
-    payloads   = {},     -- {label, file, size, hash, ts, preview, source}
-    selected   = nil,    -- payload terpilih
+    payloads   = {},
+    selected   = nil,
     stats      = { http=0, get=0, load=0, char=0, concat=0, bxor=0, dump=0, env=0 },
     toggles    = {
         http=true, get=true, load=true, char=false, concat=true,
@@ -60,6 +57,11 @@ local ReloadTab  = Window:Tab({ Title = "Reload",     Icon = "play-circle" })
 local StatsTab   = Window:Tab({ Title = "Stats",      Icon = "activity" })
 local CfgTab     = Window:Tab({ Title = "Controls",   Icon = "settings" })
 
+-- forward declarations (biar bisa saling refer)
+local ReloadBox
+local push_log
+local refresh_stats
+
 -- ---------- LOG TAB ----------
 local LogSection = LogTab:Section({ Title = "hook stream" })
 local LogPara    = LogSection:Paragraph({
@@ -79,7 +81,10 @@ LogSection:Button({
 
 -- ---------- PAYLOAD TAB ----------
 local PayloadSection = PayloadTab:Section({ Title = "captured payloads" })
-local PayloadList    = PayloadSection:Dropdown({
+local PayloadMeta
+local PayloadPreview
+
+local PayloadList = PayloadSection:Dropdown({
     Title  = "select payload",
     Values = {},
     Value  = nil,
@@ -88,28 +93,29 @@ local PayloadList    = PayloadSection:Dropdown({
         for _, p in ipairs(State.payloads) do
             if p.label == v then
                 State.selected = p
-                PayloadPreview:SetDesc(p.preview)
-                PayloadMeta:SetDesc(
-                    "file: " .. p.file .. "\n"
-                    .. "size: " .. p.size .. " bytes\n"
-                    .. "hash: " .. p.hash .. "\n"
-                    .. "time: " .. os.date("%H:%M:%S", p.ts)
-                )
-                -- sinkron ke reload textbox juga
-                pcall(function() ReloadBox:Set(p.source) end)
+                if PayloadPreview then PayloadPreview:SetDesc(p.preview) end
+                if PayloadMeta then
+                    PayloadMeta:SetDesc(
+                        "file: " .. p.file .. "\n"
+                        .. "size: " .. p.size .. " bytes\n"
+                        .. "hash: " .. p.hash .. "\n"
+                        .. "time: " .. os.date("%H:%M:%S", p.ts)
+                    )
+                end
+                if ReloadBox then pcall(function() ReloadBox:Set(p.source) end) end
                 break
             end
         end
     end,
 })
 
-local PayloadMeta = PayloadSection:Paragraph({
+PayloadMeta = PayloadSection:Paragraph({
     Title = "metadata",
     Desc  = "no payload selected",
     Color = Color3.fromRGB(160, 200, 255),
 })
 
-local PayloadPreview = PayloadSection:Paragraph({
+PayloadPreview = PayloadSection:Paragraph({
     Title     = "preview (first 500 chars)",
     Desc      = "",
     Color     = Color3.fromRGB(200, 200, 200),
@@ -119,7 +125,7 @@ local PayloadPreview = PayloadSection:Paragraph({
 -- ---------- RELOAD TAB ----------
 local ReloadSection = ReloadTab:Section({ Title = "load / execute payload" })
 
-local ReloadBox = ReloadSection:TextBox({
+ReloadBox = ReloadSection:TextBox({
     Title       = "source",
     Desc        = "edit atau paste source di sini, lalu tekan Load",
     Placeholder = "-- paste luarmor source atau pilih dari Payloads tab",
@@ -134,6 +140,25 @@ local ReloadStatus = ReloadSection:Paragraph({
     Desc  = "idle",
     Color = Color3.fromRGB(200, 200, 200),
 })
+
+push_log = function(line)
+    table.insert(State.log, line)
+    if #State.log > CFG.max_log then table.remove(State.log, 1) end
+    local text = table.concat(State.log, "\n")
+    pcall(function() LogPara:SetDesc(text) end)
+    if not CFG.silent then print(HOOK_TAG, line) end
+end
+
+refresh_stats = function()
+    local s = State.stats
+    local txt = string.format(
+        "http: %d\nhttpget: %d\nloadstring: %d\nstring.char: %d\ntable.concat: %d\nbit32.bxor: %d\nstring.dump: %d\nenv ops: %d",
+        s.http, s.get, s.load, s.char, s.concat, s.bxor, s.dump, s.env
+    )
+    pcall(function() StatsPara:SetDesc(txt) end)
+    pcall(function() DumpCountLabel:SetDesc(dumped_count .. " / " .. CFG.max_dumps) end)
+    pcall(function() ExecLabel:SetDesc(tostring(State.exec_count)) end)
+end
 
 local function run_source(src, tag)
     if type(src) ~= "string" or #src < 10 then
@@ -184,7 +209,6 @@ ReloadSection:Button({
         local src
         pcall(function() src = ReloadBox:Get() end)
         if type(src) ~= "string" or src == "" then
-            -- fallback: pakai payload terpilih
             if State.selected then src = State.selected.source end
         end
         run_source(src, "reload-tab")
@@ -261,28 +285,6 @@ CtrlSection:Toggle({
 })
 
 -- ============================================================
--- UI HELPERS
--- ============================================================
-local function push_log(line)
-    table.insert(State.log, line)
-    if #State.log > CFG.max_log then table.remove(State.log, 1) end
-    local text = table.concat(State.log, "\n")
-    pcall(function() LogPara:SetDesc(text) end)
-    if not CFG.silent then print(HOOK_TAG, line) end
-end
-
-local function refresh_stats()
-    local s = State.stats
-    local txt = string.format(
-        "http: %d\nhttpget: %d\nloadstring: %d\nstring.char: %d\ntable.concat: %d\nbit32.bxor: %d\nstring.dump: %d\nenv ops: %d",
-        s.http, s.get, s.load, s.char, s.concat, s.bxor, s.dump, s.env
-    )
-    pcall(function() StatsPara:SetDesc(txt) end)
-    pcall(function() DumpCountLabel:SetDesc(dumped_count .. " / " .. CFG.max_dumps) end)
-    pcall(function() ExecLabel:SetDesc(tostring(State.exec_count)) end)
-end
-
--- ============================================================
 -- UTILITY
 -- ============================================================
 local function fnv1a(s)
@@ -321,7 +323,7 @@ local function save(name, data)
         hash    = hash,
         ts      = os.time(),
         preview = preview .. (#data > 500 and "\n... [truncated]" or ""),
-        source  = data,   -- FULL source disimpen
+        source  = data,
         label   = ("%s | %d B | %s"):format(name, #data, hash),
     }
     table.insert(State.payloads, entry)
@@ -334,9 +336,8 @@ local function save(name, data)
     refresh_stats()
 end
 
+-- FIXED: cuma satu fungsi, gak ada nested duplikat
 local function is_luarmor_url(url)
-    url = ts(url or ""):lower()
-    local function is_luarmor_url(url)
     url = ts(url or ""):lower()
     return url:find("luarmor%.net")
         or url:find("luarmor")
